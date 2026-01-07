@@ -9,7 +9,7 @@ import simpleaudio as sa
 
 PHONE_NUMBER = "+919092089717"
 BAUDRATES = [9600, 115200]
-AUDIO_FILE = "voice.wav"   # WAV file to play after call is answered
+AUDIO_FILE = "../voice.wav"  # WAV file to play after call is answered
 
 # =========================================
 

@@ -1,2 +1,4 @@
 pyserial
 simpleaudio
+paho-mqtt
+requests
