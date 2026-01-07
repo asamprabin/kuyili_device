@@ -12,8 +12,8 @@ import requests
 # ================= CONFIG =================
 
 BAUDRATES = [9600, 115200]
-ALSA_DEVICE = "plughw:1,0"
-DOWNLOAD_FILE = "voice.wav"
+AUDIO_FILE = "incoming.wav"   # downloaded audio
+ALSA_DEVICE = "default"       # 🔥 routed to USB via .asoundrc
 
 # =========================================
 
@@ -27,7 +27,10 @@ def send_cmd(ser, cmd, delay=1):
     ser.write((cmd + "\r").encode())
     time.sleep(delay)
     while ser.in_waiting:
-        print(ser.readline().decode(errors="ignore").strip())
+        try:
+            print(ser.readline().decode(errors="ignore").strip())
+        except:
+            pass
 
 
 def get_usb_serial_ports():
@@ -50,29 +53,33 @@ def detect_gsm():
                 print(f"🔄 Trying {port} @ {baud}")
                 ser = serial.Serial(port, baudrate=baud, timeout=1)
                 time.sleep(2)
+
                 ser.write(b"AT\r")
                 time.sleep(1)
+
                 if ser.in_waiting and b"OK" in ser.read(ser.in_waiting):
                     print(f"✅ GSM detected on {port} @ {baud}")
                     return ser
+
                 ser.close()
             except:
                 pass
 
-    raise RuntimeError("GSM modem not detected")
+    raise RuntimeError("❌ GSM modem not detected")
 
 
 def play_audio(audio_file):
-    print("🔊 Playing audio...")
+    print("🔊 Playing audio on USB sound card...")
     subprocess.run(
-        ["aplay", "-D", ALSA_DEVICE, audio_file],
+        ["aplay", "-D", ALSA_DEVICE, "--quiet", audio_file],
         check=True
     )
+    time.sleep(0.5)  # allow ALSA to release device
 
 
 def make_call_and_play(mobile, audio_file):
-    with gsm_lock:  # 🔒 ENSURES ONE CALL AT A TIME
-        print(f"📞 Starting call job for {mobile}")
+    with gsm_lock:  # 🔒 ensures one call at a time
+        print(f"📞 Starting call to {mobile}")
 
         ser = detect_gsm()
 
@@ -92,15 +99,22 @@ def make_call_and_play(mobile, audio_file):
 
             if ser.in_waiting:
                 line = ser.readline().decode(errors="ignore").strip()
+                if not line:
+                    continue
+
                 print(line)
 
+                # +CLCC: 1,0,0,0,0,... => ACTIVE CALL
                 if "+CLCC:" in line:
                     parts = line.split(",")
                     if len(parts) > 2 and parts[2].strip() == "0":
                         if not call_connected:
                             call_connected = True
                             print("✅ Call answered")
+
                             play_audio(audio_file)
+
+                            print("📴 Hanging up")
                             send_cmd(ser, "ATH", delay=2)
                             break
 
@@ -113,9 +127,11 @@ def make_call_and_play(mobile, audio_file):
         ser.close()
         print("🔌 GSM released")
 
+
 # ---------- QUEUE WORKER ----------
 
 def worker():
+    print("🧵 GSM worker started (serial execution)")
     while True:
         job = job_queue.get()
         try:
@@ -134,19 +150,19 @@ def on_message(client, userdata, msg):
         payload = json.loads(msg.payload.decode())
         print("📩 Job received:", payload)
 
-        audio_url = payload["audio_url"]
         mobile = payload["mobile"]
+        audio_url = payload["audio_url"]
 
         print("⬇️ Downloading audio...")
-        r = requests.get(audio_url, timeout=10)
+        r = requests.get(audio_url, timeout=15)
         r.raise_for_status()
 
-        with open(DOWNLOAD_FILE, "wb") as f:
+        with open(AUDIO_FILE, "wb") as f:
             f.write(r.content)
 
         job_queue.put({
             "mobile": mobile,
-            "audio": DOWNLOAD_FILE
+            "audio": AUDIO_FILE
         })
 
         print("📥 Job queued")
@@ -154,8 +170,17 @@ def on_message(client, userdata, msg):
     except Exception as e:
         print("❌ Invalid job:", e)
 
-# ---------- START ----------
+
+# ---------- MAIN ----------
 
 if __name__ == "__main__":
+    # start single worker
     threading.Thread(target=worker, daemon=True).start()
-    print("🚀 GSM Worker started (ONE JOB AT A TIME)")
+
+    print("🚀 Voice device ready")
+    print("🎧 ALSA device:", ALSA_DEVICE)
+    print("📞 GSM jobs will be processed ONE BY ONE")
+
+    # MQTT client should be started elsewhere and use on_message
+    # client.on_message = on_message
+    # client.loop_forever()
